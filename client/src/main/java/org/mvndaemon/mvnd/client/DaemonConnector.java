@@ -261,7 +261,7 @@ public class DaemonConnector {
             if (result.isCompatible()) {
                 compatibleDaemons.add(daemon);
             } else {
-                LOGGER.debug("{} daemon {} does not match the desired criteria: "
+                LOGGER.info("{} daemon {} does not match the desired criteria: "
                         + result.getWhy(), daemon.getState(), daemon.getId());
             }
         }
@@ -305,59 +305,87 @@ public class DaemonConnector {
     private Process startDaemonProcess(String daemonId) {
         final Path mvndHome = parameters.mvndHome();
         final Path workingDir = parameters.userDir();
+        final Path checkpointDir = parameters.daemonCheckpointHome();
+        boolean useCheckpoint = parameters.useCheckpoint();
+        boolean checkpointExists = false;
+        if (useCheckpoint) {
+            if (Files.isDirectory(checkpointDir)) {
+                try (DirectoryStream<Path> dir = Files.newDirectoryStream(checkpointDir)) {
+                    checkpointExists = dir.iterator().hasNext();
+                } catch (IOException e) {
+                    throw new DaemonException(e);
+                }
+            } else {
+                try {
+                    Files.createDirectories(checkpointDir);
+                } catch (IOException e) {
+                    LOGGER.warn("Failed to create directory " + checkpointDir + "for checkpointing. Continuing without it");
+                    useCheckpoint = false;
+                }
+            }
+        }
+
         String command = "";
         try (DirectoryStream<Path> jarPaths = Files.newDirectoryStream(mvndHome.resolve("mvn/lib/ext"))) {
             List<String> args = new ArrayList<>();
             // executable
             final String java = Os.current().isUnixLike() ? "bin/java" : "bin\\java.exe";
             args.add(parameters.javaHome().resolve(java).toString());
-            // classpath
-            String mvndCommonPath = null;
-            String mvndAgentPath = null;
-            for (Path jar : jarPaths) {
-                String s = jar.getFileName().toString();
-                if (s.endsWith(".jar")) {
-                    if (s.startsWith("mvnd-common-")) {
-                        mvndCommonPath = jar.toString();
-                    } else if (s.startsWith("mvnd-agent-")) {
-                        mvndAgentPath = jar.toString();
+
+            if (useCheckpoint && checkpointExists) {
+                args.add("-XX:CRaCRestoreFrom=" + checkpointDir);
+            } else {
+                // classpath
+                String mvndCommonPath = null;
+                String mvndAgentPath = null;
+                for (Path jar : jarPaths) {
+                    String s = jar.getFileName().toString();
+                    if (s.endsWith(".jar")) {
+                        if (s.startsWith("mvnd-common-")) {
+                            mvndCommonPath = jar.toString();
+                        } else if (s.startsWith("mvnd-agent-")) {
+                            mvndAgentPath = jar.toString();
+                        }
                     }
                 }
-            }
-            if (mvndCommonPath == null) {
-                throw new IllegalStateException("Could not find mvnd-common jar in mvn/lib/ext/");
-            }
-            if (mvndAgentPath == null) {
-                throw new IllegalStateException("Could not find mvnd-agent jar in mvn/lib/ext/");
-            }
-            args.add("-classpath");
-            args.add(mvndCommonPath + File.pathSeparator + mvndAgentPath);
-            args.add("-javaagent:" + mvndAgentPath);
-            // debug options
-            if (parameters.property(Environment.MVND_DEBUG).asBoolean()) {
-                args.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8000");
-            }
-            // jvm args
-            String jvmArgs = parameters.jvmArgs();
-            if (jvmArgs != null) {
-                for (String arg : jvmArgs.split(" ")) {
-                    if (!arg.isEmpty()) {
-                        args.add(arg);
+                if (mvndCommonPath == null) {
+                    throw new IllegalStateException("Could not find mvnd-common jar in mvn/lib/ext/");
+                }
+                if (mvndAgentPath == null) {
+                    throw new IllegalStateException("Could not find mvnd-agent jar in mvn/lib/ext/");
+                }
+                args.add("-classpath");
+                args.add(mvndCommonPath + File.pathSeparator + mvndAgentPath);
+                args.add("-javaagent:" + mvndAgentPath);
+                // debug options
+                if (parameters.property(Environment.MVND_DEBUG).asBoolean()) {
+                    args.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8000");
+                }
+                // jvm args
+                String jvmArgs = parameters.jvmArgs();
+                if (jvmArgs != null) {
+                    for (String arg : jvmArgs.split(" ")) {
+                        if (!arg.isEmpty()) {
+                            args.add(arg);
+                        }
                     }
                 }
-            }
-            // memory
-            String minHeapSize = parameters.minHeapSize();
-            if (minHeapSize != null) {
-                args.add("-Xms" + minHeapSize);
-            }
-            String maxHeapSize = parameters.maxHeapSize();
-            if (maxHeapSize != null) {
-                args.add("-Xmx" + maxHeapSize);
-            }
-            String threadStackSize = parameters.threadStackSize();
-            if (threadStackSize != null) {
-                args.add("-Xss" + threadStackSize);
+                // memory
+                String minHeapSize = parameters.minHeapSize();
+                if (minHeapSize != null) {
+                    args.add("-Xms" + minHeapSize);
+                }
+                String maxHeapSize = parameters.maxHeapSize();
+                if (maxHeapSize != null) {
+                    args.add("-Xmx" + maxHeapSize);
+                }
+                String threadStackSize = parameters.threadStackSize();
+                if (threadStackSize != null) {
+                    args.add("-Xss" + threadStackSize);
+                }
+                if (useCheckpoint) {
+                    args.add("-XX:CRaCCheckpointTo=" + checkpointDir);
+                }
             }
 
             Environment.MVND_HOME.addCommandLineOption(args, mvndHome.toString());
@@ -375,7 +403,9 @@ public class DaemonConnector {
                             () -> getJavaVersion() >= 16.0f ? SocketFamily.unix : SocketFamily.inet)
                             .toString());
             parameters.discriminatingCommandLineOptions(args);
+            Environment.MVND_USE_CHECKPOINT.addCommandLineOption(args, String.valueOf(useCheckpoint));
             args.add(MavenDaemon.class.getName());
+
             command = String.join(" ", args);
 
             LOGGER.debug("Starting daemon process: id = {}, workingDir = {}, daemonArgs: {}", daemonId, workingDir, command);

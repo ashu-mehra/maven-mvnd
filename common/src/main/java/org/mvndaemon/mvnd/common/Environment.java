@@ -270,7 +270,11 @@ public enum Environment {
     /**
      * The SyncContextFactory to use (can be either 'noop' or 'ipc' for a server-wide factory).
      */
-    MVND_SYNC_CONTEXT_FACTORY("mvnd.syncContextFactory", null, "local", OptionType.BOOLEAN, Flags.OPTIONAL);
+    MVND_SYNC_CONTEXT_FACTORY("mvnd.syncContextFactory", null, "local", OptionType.BOOLEAN, Flags.OPTIONAL),
+
+    MVND_USE_CHECKPOINT("mvnd.useCheckpoint", null, Boolean.FALSE, OptionType.BOOLEAN, Flags.DISCRIMINATING),
+
+    MVND_CHECKPOINT_HOME("mvnd.checkpoint.home", "MVND_CHECKPOINT_HOME", null, OptionType.PATH, Flags.NONE);
 
     static Properties properties;
 
@@ -400,8 +404,16 @@ public enum Environment {
         return TimeUtils.toDuration(asString());
     }
 
+    private String quoteIfRequired(String value) {
+        if (value.matches(".*\\s.*")) {
+            return "\"" + value + "\"";
+        } else {
+            return value;
+        }
+    }
+
     public String asDaemonOpt(String value) {
-        return property + "=" + type.normalize(value);
+        return property + "=" + quoteIfRequired(type.normalize(value));
     }
 
     public void addCommandLineOption(Collection<String> args, String value) {
@@ -409,7 +421,7 @@ public enum Environment {
             args.add(options.keySet().iterator().next());
             args.add(type.normalize(value));
         } else {
-            args.add("-D" + property + "=" + type.normalize(value));
+            args.add("-D" + property + "=" + quoteIfRequired(type.normalize(value)));
         }
     }
 

@@ -459,6 +459,23 @@ public class DaemonParameters {
         return result;
     }
 
+    public boolean useCheckpoint() {
+        return value(Environment.MVND_USE_CHECKPOINT)
+                .orSystemProperty()
+                .orDefault()
+                .asBoolean();
+    }
+
+    public Path daemonCheckpointHome() {
+        return value(Environment.MVND_CHECKPOINT_HOME)
+                .orSystemProperty()
+                .orDefault(
+                        () -> userHome().resolve(".m2/mvnd/checkpoint/" + BuildProperties.getInstance().getVersion())
+                                .toString())
+                .asPath()
+                .toAbsolutePath().normalize();
+    }
+
     public static class PropertiesBuilder {
         private Map<String, String> properties = new LinkedHashMap<>();
 

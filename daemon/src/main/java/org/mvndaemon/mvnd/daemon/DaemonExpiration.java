@@ -58,6 +58,10 @@ public class DaemonExpiration {
 
     }
 
+    public static DaemonExpirationStrategy masterOrOneRequest() {
+        return any(master(), thresholdRequestsProcessed(1));
+    }
+
     public static DaemonExpirationStrategy master() {
         return any(
                 any(gcTrashing(), lowHeapSpace(), lowNonHeap()),
@@ -132,6 +136,16 @@ public class DaemonExpiration {
                 }
             } catch (SecurityException e) {
                 return new DaemonExpirationResult(GRACEFUL_EXPIRE, "after the daemon registry became inaccessible");
+            }
+        };
+    }
+
+    static DaemonExpirationStrategy thresholdRequestsProcessed(int threshold) {
+        return daemon -> {
+            if (daemon.getRequestCount() >= threshold) {
+                return new DaemonExpirationResult(IMMEDIATE_EXPIRE, "after processing certain number of requests");
+            } else {
+                return NOT_TRIGGERED;
             }
         };
     }

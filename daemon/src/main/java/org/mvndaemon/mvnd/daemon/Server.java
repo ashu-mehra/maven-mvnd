@@ -41,6 +41,9 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.apache.maven.cli.DaemonMavenCli;
+import org.crac.Context;
+import org.crac.Core;
+import org.crac.Resource;
 import org.mvndaemon.mvnd.builder.SmartBuilder;
 import org.mvndaemon.mvnd.common.DaemonConnection;
 import org.mvndaemon.mvnd.common.DaemonException;
@@ -76,12 +79,12 @@ public class Server implements AutoCloseable, Runnable {
     private static final Logger LOGGER = LoggerFactory.getLogger(Server.class);
     public static final int CANCEL_TIMEOUT = 10 * 1000;
 
-    private final String daemonId;
-    private final boolean noDaemon;
+    private String daemonId;
+    private boolean noDaemon;
     private final ServerSocketChannel socket;
     private final DaemonMavenCli cli;
     private volatile DaemonInfo info;
-    private final DaemonRegistry registry;
+    private DaemonRegistry registry;
 
     private final ScheduledExecutorService executor;
     private final DaemonExpirationStrategy strategy;
@@ -89,7 +92,9 @@ public class Server implements AutoCloseable, Runnable {
     private final Lock stateLock = new ReentrantLock();
     private final Condition condition = stateLock.newCondition();
     private final DaemonMemoryStatus memoryStatus;
-    private final long keepAliveMs;
+    private long keepAliveMs;
+    private int requestCount;
+    private boolean useCheckpoint;
 
     public Server() throws IOException {
         // When spawning a new process, the child process is create within
@@ -108,9 +113,6 @@ public class Server implements AutoCloseable, Runnable {
         } catch (Throwable t) {
             LOGGER.warn("Unable to ignore INT and TSTP signals", t);
         }
-        this.daemonId = Environment.MVND_ID.asString();
-        this.noDaemon = Environment.MVND_NO_DAEMON.asBoolean();
-        this.keepAliveMs = Environment.MVND_KEEP_ALIVE.asDuration().toMillis();
 
         SocketFamily socketFamily = Environment.MVND_SOCKET_FAMILY
                 .asOptional()
@@ -119,15 +121,17 @@ public class Server implements AutoCloseable, Runnable {
 
         try {
             cli = new DaemonMavenCli();
-            registry = new DaemonRegistry(Environment.MVND_REGISTRY.asPath());
             socket = socketFamily.openServerSocket();
             executor = Executors.newScheduledThreadPool(1);
             strategy = DaemonExpiration.master();
             memoryStatus = new DaemonMemoryStatus(executor);
+            requestCount = 0;
 
             SecureRandom secureRandom = new SecureRandom();
             byte[] token = new byte[DaemonInfo.TOKEN_SIZE];
             secureRandom.nextBytes(token);
+
+            initUsingEnv();
 
             List<String> opts = new ArrayList<>();
             Arrays.stream(Environment.values())
@@ -150,6 +154,27 @@ public class Server implements AutoCloseable, Runnable {
             registry.store(info);
         } catch (Exception e) {
             throw new RuntimeException("Could not initialize " + Server.class.getName(), e);
+        }
+    }
+
+    private void initUsingEnv() {
+        this.daemonId = Environment.MVND_ID.asString();
+        this.noDaemon = Environment.MVND_NO_DAEMON.asBoolean();
+        this.keepAliveMs = Environment.MVND_KEEP_ALIVE.asDuration().toMillis();
+        this.useCheckpoint = Environment.MVND_USE_CHECKPOINT.asBoolean();
+        registry = new DaemonRegistry(Environment.MVND_REGISTRY.asPath());
+        if (this.useCheckpoint) {
+            Core.getGlobalContext().register(new CRaCResource());
+        }
+    }
+
+    class CRaCResource implements Resource {
+        public void beforeCheckpoint(Context<? extends Resource> context) throws Exception {
+            /* nothing to do */
+        }
+
+        public void afterRestore(Context<? extends Resource> context) throws Exception {
+            Server.this.initUsingEnv();
         }
     }
 
@@ -201,6 +226,10 @@ public class Server implements AutoCloseable, Runnable {
                     client(socket);
                 }
             } else {
+                if (useCheckpoint) {
+                    accept();
+                    createCheckpoint();
+                }
                 new DaemonThread(this::accept).start();
                 awaitStop();
             }
@@ -208,6 +237,15 @@ public class Server implements AutoCloseable, Runnable {
             LOGGER.error("Error running daemon loop", t);
         } finally {
             registry.remove(daemonId);
+        }
+    }
+
+    public void createCheckpoint() {
+        try {
+            Thread.currentThread().sleep(1000);
+            Core.checkpointRestore();
+        } catch (org.crac.CheckpointException | org.crac.RestoreException | InterruptedException e) {
+            LOGGER.error("Error in creating checkpoint", e);
         }
     }
 
@@ -219,9 +257,15 @@ public class Server implements AutoCloseable, Runnable {
 
     private void accept() {
         try {
-            while (true) {
+            if (useCheckpoint) {
                 try (SocketChannel socket = this.socket.accept()) {
                     client(socket);
+                }
+            } else {
+                while (true) {
+                    try (SocketChannel socket = this.socket.accept()) {
+                        client(socket);
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -569,12 +613,15 @@ public class Server implements AutoCloseable, Runnable {
                 });
                 System.setOut(new LoggingOutputStream(s -> sendQueue.add(Message.out(s))).printStream());
                 System.setErr(new LoggingOutputStream(s -> sendQueue.add(Message.err(s))).printStream());
+                /*
                 int exitCode = cli.main(
                         buildRequest.getArgs(),
                         buildRequest.getWorkingDir(),
                         buildRequest.getProjectDir(),
                         buildRequest.getEnv(),
                         buildEventListener);
+                	*/
+                int exitCode = 0;
                 LOGGER.info("Build finished, finishing message dispatch");
                 buildEventListener.finish(exitCode);
             } catch (Throwable t) {
@@ -630,6 +677,10 @@ public class Server implements AutoCloseable, Runnable {
 
     public long getLastBusy() {
         return info.getLastBusy();
+    }
+
+    public int getRequestCount() {
+        return this.requestCount;
     }
 
     @Override
