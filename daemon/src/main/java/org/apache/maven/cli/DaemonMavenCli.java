@@ -198,7 +198,6 @@ public class DaemonMavenCli {
         toolchainsBuilder = container.lookup(ToolchainsBuilder.class);
         dispatcher = (DefaultSecDispatcher) container.lookup(SecDispatcher.class, "maven");
         executionListener = container.lookup(LoggingExecutionListener.class);
-
     }
 
     public int main(List<String> arguments,

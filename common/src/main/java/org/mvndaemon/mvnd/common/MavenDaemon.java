@@ -21,6 +21,7 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.stream.Stream;
+import org.crac.Core;
 
 public class MavenDaemon {
 
@@ -79,6 +80,17 @@ public class MavenDaemon {
         try (AutoCloseable server = (AutoCloseable) clazz.getConstructor().newInstance()) {
             ((Runnable) server).run();
         }
+
+        if (Environment.MVND_DO_CHECKPOINT.asBoolean()) {
+            doCheckpoint();
+        }
     }
 
+    private static void doCheckpoint() {
+        try {
+            Core.checkpointRestore();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }

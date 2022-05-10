@@ -270,7 +270,11 @@ public enum Environment {
     /**
      * The SyncContextFactory to use (can be either 'noop' or 'ipc' for a server-wide factory).
      */
-    MVND_SYNC_CONTEXT_FACTORY("mvnd.syncContextFactory", null, "local", OptionType.BOOLEAN, Flags.OPTIONAL);
+    MVND_SYNC_CONTEXT_FACTORY("mvnd.syncContextFactory", null, "local", OptionType.BOOLEAN, Flags.OPTIONAL),
+
+    MVND_DO_CHECKPOINT("mvnd.doCheckpoint", null, Boolean.FALSE, OptionType.BOOLEAN, Flags.NONE),
+
+    MVND_CHECKPOINT_HOME("mvnd.checkpoint.home", "MVND_CHECKPOINT_HOME", null, OptionType.PATH, Flags.NONE);
 
     static Properties properties;
 

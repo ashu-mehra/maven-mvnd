@@ -16,7 +16,10 @@
 package org.mvndaemon.mvnd.daemon;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.lang.reflect.Field;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
@@ -40,7 +43,14 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.joran.JoranConfigurator;
+import ch.qos.logback.core.joran.spi.JoranException;
 import org.apache.maven.cli.DaemonMavenCli;
+import org.crac.Context;
+import org.crac.Core;
+import org.crac.Resource;
 import org.mvndaemon.mvnd.builder.SmartBuilder;
 import org.mvndaemon.mvnd.common.DaemonConnection;
 import org.mvndaemon.mvnd.common.DaemonException;
@@ -74,6 +84,7 @@ import static org.mvndaemon.mvnd.common.DaemonState.Stopped;
 public class Server implements AutoCloseable, Runnable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Server.class);
+    private static Resource resource;
     public static final int CANCEL_TIMEOUT = 10 * 1000;
 
     private final String daemonId;
@@ -90,6 +101,18 @@ public class Server implements AutoCloseable, Runnable {
     private final Condition condition = stateLock.newCondition();
     private final DaemonMemoryStatus memoryStatus;
     private final long keepAliveMs;
+    private final boolean doCheckpoint;
+
+    static {
+        if (Environment.MVND_DO_CHECKPOINT.asBoolean()) {
+            try {
+                 resource = new CracResource();
+                Core.getGlobalContext().register(resource);
+            } catch (Exception e) {
+                LOGGER.warn("Failed to initialize CracResource");
+            }
+        }
+    }
 
     public Server() throws IOException {
         // When spawning a new process, the child process is create within
@@ -111,6 +134,7 @@ public class Server implements AutoCloseable, Runnable {
         this.daemonId = Environment.MVND_ID.asString();
         this.noDaemon = Environment.MVND_NO_DAEMON.asBoolean();
         this.keepAliveMs = Environment.MVND_KEEP_ALIVE.asDuration().toMillis();
+        this.doCheckpoint = Environment.MVND_DO_CHECKPOINT.asBoolean();
 
         SocketFamily socketFamily = Environment.MVND_SOCKET_FAMILY
                 .asOptional()
@@ -163,6 +187,7 @@ public class Server implements AutoCloseable, Runnable {
                 updateState(Stopped);
             } finally {
                 try {
+                    registry.remove(daemonId);
                     executor.shutdown();
                 } finally {
                     try {
@@ -196,7 +221,7 @@ public class Server implements AutoCloseable, Runnable {
             executor.scheduleAtFixedRate(this::expirationCheck,
                     expirationCheckDelay.toMillis(), expirationCheckDelay.toMillis(), TimeUnit.MILLISECONDS);
             LOGGER.info("Daemon started");
-            if (noDaemon) {
+            if (noDaemon || doCheckpoint) {
                 try (SocketChannel socket = this.socket.accept()) {
                     client(socket);
                 }
@@ -206,8 +231,6 @@ public class Server implements AutoCloseable, Runnable {
             }
         } catch (Throwable t) {
             LOGGER.error("Error running daemon loop", t);
-        } finally {
-            registry.remove(daemonId);
         }
     }
 
@@ -465,6 +488,8 @@ public class Server implements AutoCloseable, Runnable {
 
     private void handle(DaemonConnection connection, BuildRequest buildRequest) {
         updateState(Busy);
+        PrintStream out = System.out;
+        PrintStream err = System.err;
         final BlockingQueue<Message> sendQueue = new PriorityBlockingQueue<>(64, Message.getMessageComparator());
         final BlockingQueue<Message> recvQueue = new LinkedBlockingDeque<>();
         final BuildEventListener buildEventListener = new ClientDispatcher(sendQueue);
@@ -591,6 +616,9 @@ public class Server implements AutoCloseable, Runnable {
                 LOGGER.info("Daemon back to idle");
                 updateState(DaemonState.Idle);
                 System.gc();
+                /* reset stdout and stderr */
+                System.setOut(out);
+                System.setErr(err);
             }
         }
     }
@@ -635,5 +663,29 @@ public class Server implements AutoCloseable, Runnable {
     @Override
     public String toString() {
         return info.toString();
+    }
+
+    private static class CracResource implements Resource {
+        private static final Logger LOGGER = LoggerFactory.getLogger(CracResource.class);
+        private static final LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
+
+        private void closeLogger() {
+            loggerContext.reset();
+        }
+
+        public void beforeCheckpoint(Context<? extends Resource> context) throws Exception {
+            closeLogger();
+        }
+
+        private void reconfigureLogger() throws MalformedURLException, JoranException {
+            URL configFile = Environment.LOGBACK_CONFIGURATION_FILE.asPath().toUri().toURL();
+            JoranConfigurator configurator = new JoranConfigurator();
+            configurator.setContext(loggerContext);
+            configurator.doConfigure(configFile);
+        }
+
+        public void afterRestore(Context<? extends Resource> context) throws Exception {
+            reconfigureLogger();
+        }
     }
 }
