@@ -21,6 +21,7 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.stream.Stream;
+import org.crac.Core;
 
 public class MavenDaemon {
 
