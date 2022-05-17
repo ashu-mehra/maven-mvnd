@@ -142,7 +142,7 @@ public class Server implements AutoCloseable, Runnable {
                 .orElse(SocketFamily.inet);
 
         try {
-            cli = new DaemonMavenCli();
+            cli = DaemonMavenCli.getSingleton();
             registry = new DaemonRegistry(Environment.MVND_REGISTRY.asPath());
             socket = socketFamily.openServerSocket();
             executor = Executors.newScheduledThreadPool(1);

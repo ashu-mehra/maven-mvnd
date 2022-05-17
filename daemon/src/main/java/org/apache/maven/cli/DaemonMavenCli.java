@@ -180,7 +180,9 @@ public class DaemonMavenCli {
     /** Non-volatile, assuming that it is accessed only from the main thread */
     private BuildEventListener buildEventListener = BuildEventListener.dummy();
 
-    public DaemonMavenCli() throws Exception {
+    private static final DaemonMavenCli singleton = createSingleton();
+
+    private DaemonMavenCli() throws Exception {
         slf4jLoggerFactory = LoggerFactory.getILoggerFactory();
         slf4jLogger = slf4jLoggerFactory.getLogger(this.getClass().getName());
         plexusLoggerManager = new Slf4jLoggerManager();
@@ -198,6 +200,18 @@ public class DaemonMavenCli {
         toolchainsBuilder = container.lookup(ToolchainsBuilder.class);
         dispatcher = (DefaultSecDispatcher) container.lookup(SecDispatcher.class, "maven");
         executionListener = container.lookup(LoggingExecutionListener.class);
+    }
+
+    private static DaemonMavenCli createSingleton() {
+        try {
+            return new DaemonMavenCli();
+        } catch(Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static DaemonMavenCli getSingleton() {
+        return singleton;
     }
 
     public int main(List<String> arguments,
